@@ -2,18 +2,19 @@ import {
   collection, 
   doc, 
   setDoc, 
-  getDocs, 
+  getDocs,
+  getDoc,
   query, 
   where,
   deleteDoc,
   updateDoc,
   serverTimestamp,
-  Timestamp
+  Timestamp,
+  writeBatch
 } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { Client, Project, TimeEntry, TimeState, Task } from '../types';
 
-// Collection names
 const COLLECTIONS = {
   USERS: 'users',
   CLIENTS: 'clients',
@@ -23,7 +24,6 @@ const COLLECTIONS = {
   SETTINGS: 'settings'
 } as const;
 
-// Helper function to convert Firestore timestamps to Date objects
 const convertTimestamps = (data: any) => {
   const result = { ...data };
   Object.keys(result).forEach(key => {
@@ -34,180 +34,108 @@ const convertTimestamps = (data: any) => {
   return result;
 };
 
-// Client operations
-export const saveClient = async (userId: string, client: Client) => {
-  const clientRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.CLIENTS}/${client.id}`);
-  await setDoc(clientRef, {
-    ...client,
-    updatedAt: serverTimestamp()
-  });
-};
-
-export const deleteClient = async (userId: string, clientId: string) => {
+export const saveTimeState = async (userId: string, state: TimeState) => {
   try {
-    // Delete client
-    await deleteDoc(doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.CLIENTS}/${clientId}`));
+    // Create user document if it doesn't exist
+    const userRef = doc(db, COLLECTIONS.USERS, userId);
+    const userDoc = await getDoc(userRef);
+    if (!userDoc.exists()) {
+      await setDoc(userRef, {
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    }
 
-    // Delete associated projects
-    const projectsSnapshot = await getDocs(
-      query(
-        collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}`),
-        where('clientId', '==', clientId)
-      )
-    );
-    
-    // Delete projects and their tasks
-    for (const projectDoc of projectsSnapshot.docs) {
-      const projectId = projectDoc.id;
+    const batch = writeBatch(db);
+
+    // Save clients
+    for (const client of state.clients) {
+      const clientRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.CLIENTS}/${client.id}`);
+      batch.set(clientRef, {
+        ...client,
+        updatedAt: serverTimestamp()
+      });
+    }
+
+    // Save projects and their tasks
+    for (const project of state.projects) {
+      const { tasks, ...projectData } = project;
+      const projectRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${project.id}`);
       
-      // Delete tasks
-      const tasksSnapshot = await getDocs(
-        collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${projectId}/${COLLECTIONS.TASKS}`)
-      );
-      
-      for (const taskDoc of tasksSnapshot.docs) {
-        await deleteDoc(taskDoc.ref);
+      batch.set(projectRef, {
+        ...projectData,
+        updatedAt: serverTimestamp()
+      });
+
+      // Save tasks
+      for (const task of tasks) {
+        const taskRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${project.id}/${COLLECTIONS.TASKS}/${task.id}`);
+        batch.set(taskRef, {
+          ...task,
+          updatedAt: serverTimestamp()
+        });
       }
-      
-      // Delete project
-      await deleteDoc(projectDoc.ref);
     }
 
-    // Delete associated time entries
-    const entriesSnapshot = await getDocs(
-      query(
-        collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.TIME_ENTRIES}`),
-        where('clientId', '==', clientId)
-      )
-    );
-
-    for (const entryDoc of entriesSnapshot.docs) {
-      await deleteDoc(entryDoc.ref);
+    // Save time entries
+    for (const entry of state.entries) {
+      const entryRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.TIME_ENTRIES}/${entry.id}`);
+      batch.set(entryRef, {
+        ...entry,
+        startTime: Timestamp.fromDate(entry.startTime),
+        endTime: entry.endTime ? Timestamp.fromDate(entry.endTime) : null,
+        updatedAt: serverTimestamp()
+      });
     }
+
+    // Save current entry if exists
+    const currentEntryRef = doc(db, `${COLLECTIONS.USERS}/${userId}/currentEntry/entry`);
+    if (state.currentEntry) {
+      batch.set(currentEntryRef, {
+        ...state.currentEntry,
+        startTime: Timestamp.fromDate(state.currentEntry.startTime),
+        endTime: state.currentEntry.endTime ? Timestamp.fromDate(state.currentEntry.endTime) : null,
+        updatedAt: serverTimestamp()
+      });
+    } else {
+      batch.delete(currentEntryRef);
+    }
+
+    // Save settings
+    const settingsRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.SETTINGS}/preferences`);
+    batch.set(settingsRef, {
+      selectedClientId: state.selectedClientId,
+      updatedAt: serverTimestamp()
+    });
+
+    await batch.commit();
   } catch (error) {
-    console.error('Error deleting client:', error);
+    console.error('Error saving time state:', error);
     throw error;
   }
 };
 
-// Project operations
-export const saveProject = async (userId: string, project: Project) => {
-  const projectRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${project.id}`);
-  
-  // Save project data without tasks
-  const { tasks, ...projectData } = project;
-  await setDoc(projectRef, {
-    ...projectData,
-    updatedAt: serverTimestamp()
-  });
-
-  // Save tasks
-  for (const task of tasks) {
-    await saveTask(userId, project.id, task);
-  }
-};
-
-export const deleteProject = async (userId: string, projectId: string) => {
-  // Delete project tasks
-  const tasksSnapshot = await getDocs(
-    collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${projectId}/${COLLECTIONS.TASKS}`)
-  );
-  
-  for (const taskDoc of tasksSnapshot.docs) {
-    await deleteDoc(taskDoc.ref);
-  }
-
-  // Delete project
-  await deleteDoc(doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${projectId}`));
-
-  // Delete associated time entries
-  const entriesSnapshot = await getDocs(
-    query(
-      collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.TIME_ENTRIES}`),
-      where('projectId', '==', projectId)
-    )
-  );
-
-  for (const entryDoc of entriesSnapshot.docs) {
-    await deleteDoc(entryDoc.ref);
-  }
-};
-
-// Task operations
-export const saveTask = async (userId: string, projectId: string, task: Task) => {
-  const taskRef = doc(
-    db,
-    `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${projectId}/${COLLECTIONS.TASKS}/${task.id}`
-  );
-  
-  await setDoc(taskRef, {
-    ...task,
-    updatedAt: serverTimestamp()
-  });
-};
-
-export const deleteTask = async (userId: string, projectId: string, taskId: string) => {
-  // Delete task
-  await deleteDoc(
-    doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${projectId}/${COLLECTIONS.TASKS}/${taskId}`)
-  );
-
-  // Delete associated time entries
-  const entriesSnapshot = await getDocs(
-    query(
-      collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.TIME_ENTRIES}`),
-      where('taskId', '==', taskId)
-    )
-  );
-
-  for (const entryDoc of entriesSnapshot.docs) {
-    await deleteDoc(entryDoc.ref);
-  }
-};
-
-// Time entry operations
-export const saveTimeEntry = async (userId: string, entry: TimeEntry) => {
-  const entryRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.TIME_ENTRIES}/${entry.id}`);
-  await setDoc(entryRef, {
-    ...entry,
-    startTime: Timestamp.fromDate(entry.startTime),
-    endTime: entry.endTime ? Timestamp.fromDate(entry.endTime) : null,
-    updatedAt: serverTimestamp()
-  });
-};
-
-export const saveCurrentEntry = async (userId: string, entry: TimeEntry | null) => {
-  const currentEntryRef = doc(db, `${COLLECTIONS.USERS}/${userId}/currentEntry/entry`);
-  
-  if (entry) {
-    await setDoc(currentEntryRef, {
-      ...entry,
-      startTime: Timestamp.fromDate(entry.startTime),
-      endTime: entry.endTime ? Timestamp.fromDate(entry.endTime) : null,
-      updatedAt: serverTimestamp()
-    });
-  } else {
-    await deleteDoc(currentEntryRef);
-  }
-};
-
-// Settings operations
-export const saveSettings = async (userId: string, settings: { selectedClientId?: string }) => {
-  const settingsRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.SETTINGS}/preferences`);
-  await setDoc(settingsRef, {
-    ...settings,
-    updatedAt: serverTimestamp()
-  });
-};
-
-// Load complete time state
 export const loadTimeState = async (userId: string): Promise<TimeState> => {
   try {
+    // Check if user document exists
+    const userRef = doc(db, COLLECTIONS.USERS, userId);
+    const userDoc = await getDoc(userRef);
+    if (!userDoc.exists()) {
+      await setDoc(userRef, {
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+      return getInitialState();
+    }
+
     // Load clients
     const clientsSnapshot = await getDocs(
       collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.CLIENTS}`)
     );
-    const clients: Client[] = clientsSnapshot.docs.map(doc => convertTimestamps(doc.data()) as Client);
+    const clients: Client[] = clientsSnapshot.docs.map(doc => ({
+      ...convertTimestamps(doc.data()),
+      id: doc.id
+    })) as Client[];
 
     // Load projects with their tasks
     const projectsSnapshot = await getDocs(
@@ -218,17 +146,18 @@ export const loadTimeState = async (userId: string): Promise<TimeState> => {
       projectsSnapshot.docs.map(async (projectDoc) => {
         const projectData = convertTimestamps(projectDoc.data());
         
-        // Load tasks for each project
         const tasksSnapshot = await getDocs(
           collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${projectDoc.id}/${COLLECTIONS.TASKS}`)
         );
         
-        const tasks = tasksSnapshot.docs.map(taskDoc => 
-          convertTimestamps(taskDoc.data()) as Task
-        );
+        const tasks = tasksSnapshot.docs.map(taskDoc => ({
+          ...convertTimestamps(taskDoc.data()),
+          id: taskDoc.id
+        })) as Task[];
         
         return {
           ...projectData,
+          id: projectDoc.id,
           tasks
         } as Project;
       })
@@ -238,28 +167,31 @@ export const loadTimeState = async (userId: string): Promise<TimeState> => {
     const entriesSnapshot = await getDocs(
       collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.TIME_ENTRIES}`)
     );
-    const entries: TimeEntry[] = entriesSnapshot.docs.map(doc => {
-      const data = convertTimestamps(doc.data());
-      return data as TimeEntry;
-    });
+    const entries: TimeEntry[] = entriesSnapshot.docs.map(doc => ({
+      ...convertTimestamps(doc.data()),
+      id: doc.id
+    })) as TimeEntry[];
 
     // Load current entry
-    const currentEntryDoc = await getDocs(
-      collection(db, `${COLLECTIONS.USERS}/${userId}/currentEntry`)
-    );
-    const currentEntry = currentEntryDoc.docs[0]?.data();
+    const currentEntryRef = doc(db, `${COLLECTIONS.USERS}/${userId}/currentEntry/entry`);
+    const currentEntryDoc = await getDoc(currentEntryRef);
+    const currentEntry = currentEntryDoc.exists() ? convertTimestamps(currentEntryDoc.data()) as TimeEntry : null;
 
     // Load settings
-    const settingsDoc = await getDocs(
-      collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.SETTINGS}`)
-    );
-    const settings = settingsDoc.docs[0]?.data();
+    const settingsRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.SETTINGS}/preferences`);
+    const settingsDoc = await getDoc(settingsRef);
+    const settings = settingsDoc.exists() ? settingsDoc.data() : null;
+
+    // If no data exists yet, return initial state
+    if (clients.length === 0) {
+      return getInitialState();
+    }
 
     return {
       clients,
       projects,
       entries,
-      currentEntry: currentEntry ? convertTimestamps(currentEntry) as TimeEntry : null,
+      currentEntry,
       isTracking: !!currentEntry,
       selectedClientId: settings?.selectedClientId || clients[0]?.id
     };
@@ -269,33 +201,32 @@ export const loadTimeState = async (userId: string): Promise<TimeState> => {
   }
 };
 
-// Save complete time state
-export const saveTimeState = async (userId: string, state: TimeState) => {
-  try {
-    // Save clients
-    for (const client of state.clients) {
-      await saveClient(userId, client);
-    }
+const getInitialState = (): TimeState => {
+  const defaultClient: Client = {
+    id: 'default',
+    name: 'Default Client',
+    color: '#3B82F6'
+  };
 
-    // Save projects and their tasks
-    for (const project of state.projects) {
-      await saveProject(userId, project);
-    }
+  const defaultProject: Project = {
+    id: 'default-project',
+    clientId: defaultClient.id,
+    name: 'General',
+    color: '#3B82F6',
+    tasks: [{
+      id: 'default-task',
+      projectId: defaultClient.id,
+      name: 'General Task',
+      description: 'Default task for general work'
+    }]
+  };
 
-    // Save time entries
-    for (const entry of state.entries) {
-      await saveTimeEntry(userId, entry);
-    }
-
-    // Save current entry
-    await saveCurrentEntry(userId, state.currentEntry);
-
-    // Save settings
-    await saveSettings(userId, {
-      selectedClientId: state.selectedClientId
-    });
-  } catch (error) {
-    console.error('Error saving time state:', error);
-    throw error;
-  }
+  return {
+    isTracking: false,
+    currentEntry: null,
+    entries: [],
+    projects: [defaultProject],
+    clients: [defaultClient],
+    selectedClientId: defaultClient.id
+  };
 };

@@ -12,7 +12,14 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({ onSubmit, initialData 
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmit({ name, color });
+    if (!name.trim()) return;
+    
+    onSubmit({ 
+      name: name.trim(), 
+      color,
+      clientId: initialData?.clientId || ''
+    });
+    
     setName('');
     setColor('#3B82F6');
   };
@@ -34,15 +41,21 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({ onSubmit, initialData 
       </div>
       <div>
         <label htmlFor="color" className="block text-sm font-medium text-gray-700">
-          Color
+          Project Color
         </label>
-        <input
-          type="color"
-          id="color"
-          value={color}
-          onChange={(e) => setColor(e.target.value)}
-          className="mt-1 block w-full h-10 rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-        />
+        <div className="mt-1 flex items-center space-x-3">
+          <input
+            type="color"
+            id="color"
+            value={color}
+            onChange={(e) => setColor(e.target.value)}
+            className="h-10 w-20 rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+          />
+          <div 
+            className="w-10 h-10 rounded-full border-2 border-gray-200"
+            style={{ backgroundColor: color }}
+          />
+        </div>
       </div>
       <button
         type="submit"

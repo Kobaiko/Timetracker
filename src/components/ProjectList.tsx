@@ -4,6 +4,7 @@ import { Project, Task } from '../types';
 import { Modal } from './Modal';
 import { ProjectForm } from './ProjectForm';
 import { TaskForm } from './TaskForm';
+import { useTimeState } from '../contexts/TimeStateContext';
 
 interface ProjectListProps {
   projects: Project[];
@@ -11,10 +12,6 @@ interface ProjectListProps {
   selectedTask: Task | null;
   onSelectProject: (project: Project) => void;
   onSelectTask: (task: Task) => void;
-  onDeleteProject: (projectId: string) => void;
-  onAddProject: (project: Omit<Project, 'id' | 'tasks'>) => void;
-  onAddTask: (task: Omit<Task, 'id'>) => void;
-  onDeleteTask: (projectId: string, taskId: string) => void;
 }
 
 export const ProjectList: React.FC<ProjectListProps> = ({
@@ -23,11 +20,8 @@ export const ProjectList: React.FC<ProjectListProps> = ({
   selectedTask,
   onSelectProject,
   onSelectTask,
-  onDeleteProject,
-  onAddProject,
-  onAddTask,
-  onDeleteTask,
 }) => {
+  const { dispatch } = useTimeState();
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState(false);
   const [isNewTaskModalOpen, setIsNewTaskModalOpen] = useState(false);
@@ -43,11 +37,39 @@ export const ProjectList: React.FC<ProjectListProps> = ({
     setExpandedProjects(newExpanded);
   };
 
+  const handleAddProject = (project: Omit<Project, 'id' | 'tasks'>) => {
+    dispatch({ type: 'ADD_PROJECT', payload: project });
+    setIsNewProjectModalOpen(false);
+  };
+
+  const handleDeleteProject = (projectId: string) => {
+    dispatch({ type: 'DELETE_PROJECT', payload: projectId });
+    if (selectedProject?.id === projectId) {
+      onSelectProject(projects[0]);
+    }
+  };
+
   const handleAddTask = (projectId: string) => {
     const project = projects.find(p => p.id === projectId);
     if (project) {
       setSelectedProjectForTask(project);
       setIsNewTaskModalOpen(true);
+    }
+  };
+
+  const handleSubmitTask = (task: Omit<Task, 'id'>) => {
+    dispatch({ type: 'ADD_TASK', payload: task });
+    setIsNewTaskModalOpen(false);
+    setSelectedProjectForTask(null);
+  };
+
+  const handleDeleteTask = (projectId: string, taskId: string) => {
+    dispatch({ type: 'DELETE_TASK', payload: { projectId, taskId } });
+    if (selectedTask?.id === taskId) {
+      const project = projects.find(p => p.id === projectId);
+      if (project && project.tasks.length > 0) {
+        onSelectTask(project.tasks[0]);
+      }
     }
   };
 
@@ -96,7 +118,7 @@ export const ProjectList: React.FC<ProjectListProps> = ({
                   )}
                 </button>
                 <button
-                  onClick={() => onDeleteProject(project.id)}
+                  onClick={() => handleDeleteProject(project.id)}
                   className="ml-2 p-2 text-gray-400 hover:text-red-500 rounded-lg hover:bg-gray-100"
                 >
                   <Trash2 className="w-4 h-4" />
@@ -118,7 +140,7 @@ export const ProjectList: React.FC<ProjectListProps> = ({
                         {task.name}
                       </button>
                       <button
-                        onClick={() => onDeleteTask(project.id, task.id)}
+                        onClick={() => handleDeleteTask(project.id, task.id)}
                         className="ml-2 p-2 text-gray-400 hover:text-red-500 rounded-lg hover:bg-gray-100"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -144,12 +166,7 @@ export const ProjectList: React.FC<ProjectListProps> = ({
         onClose={() => setIsNewProjectModalOpen(false)}
         title="Add New Project"
       >
-        <ProjectForm
-          onSubmit={(project) => {
-            onAddProject(project);
-            setIsNewProjectModalOpen(false);
-          }}
-        />
+        <ProjectForm onSubmit={handleAddProject} />
       </Modal>
 
       <Modal
@@ -160,11 +177,7 @@ export const ProjectList: React.FC<ProjectListProps> = ({
         {selectedProjectForTask && (
           <TaskForm
             projectId={selectedProjectForTask.id}
-            onSubmit={(task) => {
-              onAddTask(task);
-              setIsNewTaskModalOpen(false);
-              setSelectedProjectForTask(null);
-            }}
+            onSubmit={handleSubmitTask}
           />
         )}
       </Modal>
