@@ -1,49 +1,62 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { 
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  User
+} from 'firebase/auth';
+import { auth } from '../config/firebase';
 
 interface AuthContextType {
+  currentUser: User | null;
   isAuthenticated: boolean;
-  login: (username: string, password: string) => boolean;
-  logout: () => void;
+  login: (email: string, password: string) => Promise<void>;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const VALID_USERNAME = 'Yair';
-const VALID_PASSWORD = 'Called@2468';
-
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return localStorage.getItem('isAuthenticated') === 'true';
-  });
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const navigate = useNavigate();
   const location = useLocation();
 
   useEffect(() => {
-    if (!isAuthenticated && location.pathname !== '/login') {
-      navigate('/login', { state: { from: location }, replace: true });
-    }
-  }, [isAuthenticated, navigate, location]);
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      setIsAuthenticated(!!user);
+      
+      if (!user && location.pathname !== '/login') {
+        navigate('/login', { state: { from: location }, replace: true });
+      }
+    });
 
-  const login = (username: string, password: string): boolean => {
-    if (username === VALID_USERNAME && password === VALID_PASSWORD) {
-      setIsAuthenticated(true);
-      localStorage.setItem('isAuthenticated', 'true');
+    return unsubscribe;
+  }, [navigate, location]);
+
+  const login = async (email: string, password: string) => {
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
       const from = location.state?.from?.pathname || '/';
       navigate(from, { replace: true });
-      return true;
+    } catch (error) {
+      throw error;
     }
-    return false;
   };
 
-  const logout = () => {
-    setIsAuthenticated(false);
-    localStorage.removeItem('isAuthenticated');
-    navigate('/login', { replace: true });
+  const logout = async () => {
+    try {
+      await signOut(auth);
+      navigate('/login', { replace: true });
+    } catch (error) {
+      console.error('Error signing out:', error);
+    }
   };
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, login, logout }}>
+    <AuthContext.Provider value={{ currentUser, isAuthenticated, login, logout }}>
       {children}
     </AuthContext.Provider>
   );
