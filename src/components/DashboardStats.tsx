@@ -43,6 +43,11 @@ export const DashboardStats: React.FC<DashboardStatsProps> = ({
             </div>
           </div>
         ))}
+        {timeData.length === 0 && (
+          <div className="text-center text-gray-500 py-4">
+            No time entries in the selected period
+          </div>
+        )}
       </div>
     </div>
   );

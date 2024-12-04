@@ -14,35 +14,14 @@ export type TimeStateAction =
   | { type: 'STOP_TRACKING'; payload: Date }
   | { type: 'ADD_MANUAL_ENTRY'; payload: Omit<TimeEntry, 'id'> };
 
-export const getInitialState = (): TimeState => {
-  const defaultClient: Client = {
-    id: uuidv4(),
-    name: 'Default Client',
-    color: '#3B82F6'
-  };
-
-  const defaultProject: Project = {
-    id: uuidv4(),
-    clientId: defaultClient.id,
-    name: 'General',
-    color: '#3B82F6',
-    tasks: [{
-      id: uuidv4(),
-      projectId: defaultClient.id,
-      name: 'General Task',
-      description: 'Default task for general work'
-    }]
-  };
-
-  return {
-    isTracking: false,
-    currentEntry: null,
-    entries: [],
-    projects: [defaultProject],
-    clients: [defaultClient],
-    selectedClientId: defaultClient.id
-  };
-};
+export const getInitialState = (): TimeState => ({
+  isTracking: false,
+  currentEntry: null,
+  entries: [],
+  projects: [],
+  clients: [],
+  selectedClientId: undefined
+});
 
 export const timeStateReducer = (state: TimeState, action: TimeStateAction): TimeState => {
   switch (action.type) {
@@ -94,7 +73,7 @@ export const timeStateReducer = (state: TimeState, action: TimeStateAction): Tim
         ...action.payload,
         id: uuidv4(),
         tasks: [],
-        clientId: state.selectedClientId || state.clients[0].id
+        clientId: state.selectedClientId || state.clients[0]?.id
       };
       return {
         ...state,

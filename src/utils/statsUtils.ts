@@ -1,4 +1,4 @@
-import { TimeEntry, Project, Client } from '../types';
+import { TimeEntry, Project, Client, Task } from '../types';
 import { formatDuration } from './timeUtils';
 
 interface TimeData {
@@ -86,59 +86,76 @@ const calculateProjectDistribution = (
     .filter((item): item is NonNullable<typeof item> => item !== null);
 };
 
-export const generateReportRows = (
-  entries: TimeEntry[],
-  projects: Project[],
-  reportTitle?: string
+export const generateTaskReport = (
+  project: Project,
+  entries: TimeEntry[]
 ): string[] => {
-  const totalDuration = entries.reduce((total, entry) => {
-    if (!entry.endTime) return total;
-    return total + (entry.endTime.getTime() - entry.startTime.getTime());
-  }, 0);
+  const taskDurations = new Map<string, number>();
+  
+  // Calculate duration for each task
+  entries.forEach((entry) => {
+    if (!entry.endTime) return;
+    const duration = entry.endTime.getTime() - entry.startTime.getTime();
+    const current = taskDurations.get(entry.taskId) || 0;
+    taskDurations.set(entry.taskId, current + duration);
+  });
+
+  const totalDuration = Array.from(taskDurations.values()).reduce((sum, duration) => sum + duration, 0);
 
   const csvRows = [
-    `Time Report - ${reportTitle || 'All Clients'}`,
+    `Task Report - ${project.name}`,
     `Total Time: ${formatDuration(new Date(0), new Date(totalDuration))}`,
     '',
-    'Detailed Entries:',
-    ['Date', 'Project', 'Task', 'Description', 'Start Time', 'End Time', 'Duration'].join(',')
+    'Tasks Overview:',
+    ['Task Name', 'Description', 'Total Time', 'Percentage'].join(','),
+    ''
   ];
 
-  // Group entries by date
-  const entriesByDate = entries.reduce((acc, entry) => {
-    if (!entry.endTime) return acc;
-    const date = formatDate(entry.startTime);
-    if (!acc[date]) acc[date] = [];
-    acc[date].push(entry);
-    return acc;
-  }, {} as Record<string, TimeEntry[]>);
+  // Add task summary
+  project.tasks.forEach(task => {
+    const duration = taskDurations.get(task.id) || 0;
+    const percentage = totalDuration ? ((duration / totalDuration) * 100).toFixed(1) : '0';
+    csvRows.push([
+      task.name,
+      task.description || '',
+      formatDuration(new Date(0), new Date(duration)),
+      `${percentage}%`
+    ].join(','));
+  });
 
-  // Add entries sorted by date
-  Object.entries(entriesByDate)
-    .sort(([dateA], [dateB]) => dateA.localeCompare(dateB))
-    .forEach(([date, dateEntries]) => {
-      dateEntries.forEach(entry => {
-        const project = projects.find(p => p.id === entry.projectId);
-        const task = project?.tasks.find(t => t.id === entry.taskId);
-        if (entry.endTime && project && task) {
-          csvRows.push([
-            formatDate(entry.startTime),
-            project.name,
-            task.name,
-            entry.description,
-            formatTime(entry.startTime),
-            formatTime(entry.endTime),
-            formatDuration(entry.startTime, entry.endTime)
-          ].join(','));
-        }
-      });
-    });
+  csvRows.push('');
+  csvRows.push('Detailed Time Entries:');
+  csvRows.push(['Date', 'Task', 'Description', 'Start Time', 'End Time', 'Duration'].join(','));
 
+  // Group entries by task
+  project.tasks.forEach(task => {
+    const taskEntries = entries.filter(entry => entry.taskId === task.id && entry.endTime);
+    if (taskEntries.length > 0) {
+      csvRows.push(`${task.name}:`);
+      taskEntries
+        .sort((a, b) => a.startTime.getTime() - b.startTime.getTime())
+        .forEach(entry => {
+          if (entry.endTime) {
+            csvRows.push([
+              formatDate(entry.startTime),
+              task.name,
+              entry.description,
+              formatTime(entry.startTime),
+              formatTime(entry.endTime),
+              formatDuration(entry.startTime, entry.endTime)
+            ].join(','));
+          }
+        });
+      csvRows.push('');
+    }
+  });
+
+  csvRows.push(`Report generated on: ${new Date().toLocaleString()}`);
   return csvRows;
 };
 
 const formatDate = (date: Date): string => {
-  return date.toISOString().split('T')[0];
+  return date.toLocaleDateString();
 };
 
 const formatTime = (date: Date): string => {
@@ -151,7 +168,7 @@ export const downloadCsv = (rows: string[], filename: string): void => {
   const url = window.URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${filename.toLowerCase().replace(/\s+/g, '-')}-time-report.csv`;
+  a.download = `${filename.toLowerCase().replace(/\s+/g, '-')}-report.csv`;
   a.click();
   window.URL.revokeObjectURL(url);
 };

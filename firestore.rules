@@ -5,33 +5,21 @@ service cloud.firestore {
     match /users/{userId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
       
+      match /timeEntries/{entryId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+      
       match /clients/{clientId} {
         allow read, write: if request.auth != null && request.auth.uid == userId;
       }
       
       match /projects/{projectId} {
         allow read, write: if request.auth != null && request.auth.uid == userId;
-        
-        match /tasks/{taskId} {
-          allow read, write: if request.auth != null && request.auth.uid == userId;
-        }
       }
       
-      match /timeEntries/{entryId} {
+      match /tasks/{taskId} {
         allow read, write: if request.auth != null && request.auth.uid == userId;
       }
-      
-      match /settings/{document=**} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
-      }
-      
-      match /currentEntry/{document=**} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
-      }
-    }
-    
-    match /{document=**} {
-      allow read, write: if false;
     }
   }
 }

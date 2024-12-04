@@ -1,22 +1,21 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useTimeState } from '../contexts/TimeStateContext';
+import { useAuth } from '../contexts/AuthContext';
 import { Timer } from '../components/Timer';
 import { ProjectList } from '../components/ProjectList';
 import { TimeEntryList } from '../components/TimeEntryList';
 import { Modal } from '../components/Modal';
 import { ManualTimeEntry } from '../components/ManualTimeEntry';
 import { Project, Task } from '../types';
+import { saveTimeEntry } from '../services/firebase';
 
 export const TimerPage: React.FC = () => {
   const { state, dispatch } = useTimeState();
+  const { currentUser } = useAuth();
   const [isManualEntryOpen, setIsManualEntryOpen] = useState(false);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-
-  // Clear data on component mount
-  useEffect(() => {
-    dispatch({ type: 'CLEAR_DATA' });
-  }, []);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const clientProjects = state.projects.filter(
     p => p.clientId === state.selectedClientId
@@ -43,62 +42,48 @@ export const TimerPage: React.FC = () => {
     });
   };
 
-  const handleAddProject = (project: Omit<Project, 'id' | 'tasks'>) => {
-    dispatch({
-      type: 'ADD_PROJECT',
-      payload: { project },
-    });
-  };
-
-  const handleDeleteProject = (projectId: string) => {
-    dispatch({
-      type: 'DELETE_PROJECT',
-      payload: projectId,
-    });
-    if (selectedProject?.id === projectId) {
-      setSelectedProject(null);
-      setSelectedTask(null);
-    }
-  };
-
-  const handleAddTask = (task: Omit<Task, 'id'>) => {
-    dispatch({
-      type: 'ADD_TASK',
-      payload: task,
-    });
-  };
-
-  const handleDeleteTask = (projectId: string, taskId: string) => {
-    dispatch({
-      type: 'DELETE_TASK',
-      payload: { projectId, taskId },
-    });
-    if (selectedTask?.id === taskId) {
-      setSelectedTask(null);
-    }
-  };
-
-  const handleManualEntry = (entry: {
+  const handleManualEntry = async (entry: {
     taskId: string;
     projectId: string;
     description: string;
     startTime: Date;
     endTime: Date;
   }) => {
-    dispatch({
-      type: 'ADD_MANUAL_ENTRY',
-      payload: entry,
-    });
-    setIsManualEntryOpen(false);
+    if (!currentUser) return;
+
+    try {
+      const newEntry = {
+        ...entry,
+        id: crypto.randomUUID()
+      };
+
+      await saveTimeEntry(currentUser.uid, newEntry);
+      dispatch({
+        type: 'ADD_MANUAL_ENTRY',
+        payload: entry,
+      });
+      setIsManualEntryOpen(false);
+      setRefreshKey(prev => prev + 1);
+    } catch (error) {
+      console.error('Error saving manual entry:', error);
+    }
   };
 
   const handleSelectProject = (project: Project) => {
     setSelectedProject(project);
-    setSelectedTask(null); // Reset task selection when project changes
+    if (project.tasks.length > 0) {
+      setSelectedTask(project.tasks[0]);
+    } else {
+      setSelectedTask(null);
+    }
   };
 
   const handleSelectTask = (task: Task) => {
     setSelectedTask(task);
+  };
+
+  const handleTimeEntrySaved = () => {
+    setRefreshKey(prev => prev + 1);
   };
 
   return (
@@ -114,6 +99,7 @@ export const TimerPage: React.FC = () => {
         projects={clientProjects}
         onSelectProject={handleSelectProject}
         onSelectTask={handleSelectTask}
+        onTimeEntrySaved={handleTimeEntrySaved}
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -123,17 +109,11 @@ export const TimerPage: React.FC = () => {
           selectedTask={selectedTask}
           onSelectProject={handleSelectProject}
           onSelectTask={handleSelectTask}
-          onDeleteProject={handleDeleteProject}
-          onAddProject={handleAddProject}
-          onAddTask={handleAddTask}
-          onDeleteTask={handleDeleteTask}
         />
 
         <TimeEntryList
-          entries={state.entries.filter(e => {
-            const project = clientProjects.find(p => p.id === e.projectId);
-            return !!project;
-          })}
+          key={refreshKey}
+          entries={state.entries}
           projects={clientProjects}
         />
       </div>
