@@ -3,77 +3,123 @@ import {
   doc, 
   setDoc, 
   getDocs,
-  getDoc,
   query, 
   where,
   deleteDoc,
-  updateDoc,
-  serverTimestamp,
-  Timestamp,
-  writeBatch
+  writeBatch,
+  Timestamp
 } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { Client, Project, TimeEntry, TimeState, Task } from '../types';
+import { v4 as uuidv4 } from 'uuid';
 
 const COLLECTIONS = {
   USERS: 'users',
   CLIENTS: 'clients',
   PROJECTS: 'projects',
   TASKS: 'tasks',
-  TIME_ENTRIES: 'timeEntries',
-  SETTINGS: 'settings'
+  TIME_ENTRIES: 'timeEntries'
 } as const;
 
-const convertTimestamps = (data: any) => {
-  const result = { ...data };
-  Object.keys(result).forEach(key => {
-    if (result[key] instanceof Timestamp) {
-      result[key] = result[key].toDate();
+export const loadTimeState = async (userId: string): Promise<TimeState> => {
+  try {
+    // Load clients
+    const clientsSnapshot = await getDocs(collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.CLIENTS}`));
+    const clients = clientsSnapshot.docs.map(doc => ({ ...doc.data(), id: doc.id })) as Client[];
+
+    // Load projects and their tasks
+    const projectsSnapshot = await getDocs(collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}`));
+    const projects = await Promise.all(projectsSnapshot.docs.map(async doc => {
+      const projectData = doc.data();
+      const tasksSnapshot = await getDocs(collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${doc.id}/${COLLECTIONS.TASKS}`));
+      const tasks = tasksSnapshot.docs.map(taskDoc => ({ ...taskDoc.data(), id: taskDoc.id })) as Task[];
+      return { ...projectData, id: doc.id, tasks } as Project;
+    }));
+
+    // Load time entries
+    const entriesSnapshot = await getDocs(collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.TIME_ENTRIES}`));
+    const entries = entriesSnapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        ...data,
+        id: doc.id,
+        startTime: data.startTime.toDate(),
+        endTime: data.endTime?.toDate()
+      } as TimeEntry;
+    });
+
+    // If no clients exist, create default data
+    if (clients.length === 0) {
+      const defaultClient: Client = {
+        id: uuidv4(),
+        name: 'Default Client',
+        color: '#3B82F6'
+      };
+
+      const defaultProject: Project = {
+        id: uuidv4(),
+        clientId: defaultClient.id,
+        name: 'General',
+        color: '#3B82F6',
+        tasks: [{
+          id: uuidv4(),
+          projectId: defaultClient.id,
+          name: 'General Task',
+          description: 'Default task for general work'
+        }]
+      };
+
+      await setDoc(doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.CLIENTS}/${defaultClient.id}`), defaultClient);
+      await setDoc(doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${defaultProject.id}`), defaultProject);
+      await setDoc(
+        doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${defaultProject.id}/${COLLECTIONS.TASKS}/${defaultProject.tasks[0].id}`),
+        defaultProject.tasks[0]
+      );
+
+      return {
+        clients: [defaultClient],
+        projects: [defaultProject],
+        entries: [],
+        isTracking: false,
+        currentEntry: null,
+        selectedClientId: defaultClient.id
+      };
     }
-  });
-  return result;
+
+    return {
+      clients,
+      projects,
+      entries,
+      isTracking: false,
+      currentEntry: null,
+      selectedClientId: clients[0]?.id
+    };
+  } catch (error) {
+    console.error('Error loading time state:', error);
+    throw error;
+  }
 };
 
-export const saveTimeState = async (userId: string, state: TimeState) => {
+export const saveTimeState = async (userId: string, state: TimeState): Promise<void> => {
   try {
-    // Create user document if it doesn't exist
-    const userRef = doc(db, COLLECTIONS.USERS, userId);
-    const userDoc = await getDoc(userRef);
-    if (!userDoc.exists()) {
-      await setDoc(userRef, {
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
-    }
-
     const batch = writeBatch(db);
 
     // Save clients
     for (const client of state.clients) {
       const clientRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.CLIENTS}/${client.id}`);
-      batch.set(clientRef, {
-        ...client,
-        updatedAt: serverTimestamp()
-      });
+      batch.set(clientRef, client);
     }
 
     // Save projects and their tasks
     for (const project of state.projects) {
-      const { tasks, ...projectData } = project;
       const projectRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${project.id}`);
-      
-      batch.set(projectRef, {
-        ...projectData,
-        updatedAt: serverTimestamp()
-      });
+      const { tasks, ...projectData } = project;
+      batch.set(projectRef, projectData);
 
       // Save tasks
       for (const task of tasks) {
         const taskRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${project.id}/${COLLECTIONS.TASKS}/${task.id}`);
-        batch.set(taskRef, {
-          ...task,
-          updatedAt: serverTimestamp()
-        });
+        batch.set(taskRef, task);
       }
     }
 
@@ -83,30 +129,9 @@ export const saveTimeState = async (userId: string, state: TimeState) => {
       batch.set(entryRef, {
         ...entry,
         startTime: Timestamp.fromDate(entry.startTime),
-        endTime: entry.endTime ? Timestamp.fromDate(entry.endTime) : null,
-        updatedAt: serverTimestamp()
+        endTime: entry.endTime ? Timestamp.fromDate(entry.endTime) : null
       });
     }
-
-    // Save current entry if exists
-    const currentEntryRef = doc(db, `${COLLECTIONS.USERS}/${userId}/currentEntry/entry`);
-    if (state.currentEntry) {
-      batch.set(currentEntryRef, {
-        ...state.currentEntry,
-        startTime: Timestamp.fromDate(state.currentEntry.startTime),
-        endTime: state.currentEntry.endTime ? Timestamp.fromDate(state.currentEntry.endTime) : null,
-        updatedAt: serverTimestamp()
-      });
-    } else {
-      batch.delete(currentEntryRef);
-    }
-
-    // Save settings
-    const settingsRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.SETTINGS}/preferences`);
-    batch.set(settingsRef, {
-      selectedClientId: state.selectedClientId,
-      updatedAt: serverTimestamp()
-    });
 
     await batch.commit();
   } catch (error) {
@@ -115,118 +140,97 @@ export const saveTimeState = async (userId: string, state: TimeState) => {
   }
 };
 
-export const loadTimeState = async (userId: string): Promise<TimeState> => {
-  try {
-    // Check if user document exists
-    const userRef = doc(db, COLLECTIONS.USERS, userId);
-    const userDoc = await getDoc(userRef);
-    if (!userDoc.exists()) {
-      await setDoc(userRef, {
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
-      return getInitialState();
-    }
+export const deleteClient = async (userId: string, clientId: string) => {
+  const batch = writeBatch(db);
 
-    // Load clients
-    const clientsSnapshot = await getDocs(
-      collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.CLIENTS}`)
-    );
-    const clients: Client[] = clientsSnapshot.docs.map(doc => ({
-      ...convertTimestamps(doc.data()),
-      id: doc.id
-    })) as Client[];
+  // Delete client document
+  const clientRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.CLIENTS}/${clientId}`);
+  batch.delete(clientRef);
 
-    // Load projects with their tasks
-    const projectsSnapshot = await getDocs(
-      collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}`)
+  // Get and delete all projects for this client
+  const projectsSnapshot = await getDocs(
+    query(collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}`), 
+    where('clientId', '==', clientId))
+  );
+
+  for (const projectDoc of projectsSnapshot.docs) {
+    // Delete all tasks for this project
+    const tasksSnapshot = await getDocs(
+      collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${projectDoc.id}/${COLLECTIONS.TASKS}`)
     );
     
-    const projects: Project[] = await Promise.all(
-      projectsSnapshot.docs.map(async (projectDoc) => {
-        const projectData = convertTimestamps(projectDoc.data());
-        
-        const tasksSnapshot = await getDocs(
-          collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${projectDoc.id}/${COLLECTIONS.TASKS}`)
-        );
-        
-        const tasks = tasksSnapshot.docs.map(taskDoc => ({
-          ...convertTimestamps(taskDoc.data()),
-          id: taskDoc.id
-        })) as Task[];
-        
-        return {
-          ...projectData,
-          id: projectDoc.id,
-          tasks
-        } as Project;
-      })
-    );
+    tasksSnapshot.docs.forEach(taskDoc => {
+      const taskRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${projectDoc.id}/${COLLECTIONS.TASKS}/${taskDoc.id}`);
+      batch.delete(taskRef);
+    });
 
-    // Load time entries
+    // Delete the project
+    const projectRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${projectDoc.id}`);
+    batch.delete(projectRef);
+
+    // Delete all time entries for this project
     const entriesSnapshot = await getDocs(
-      collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.TIME_ENTRIES}`)
+      query(collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.TIME_ENTRIES}`),
+      where('projectId', '==', projectDoc.id))
     );
-    const entries: TimeEntry[] = entriesSnapshot.docs.map(doc => ({
-      ...convertTimestamps(doc.data()),
-      id: doc.id
-    })) as TimeEntry[];
 
-    // Load current entry
-    const currentEntryRef = doc(db, `${COLLECTIONS.USERS}/${userId}/currentEntry/entry`);
-    const currentEntryDoc = await getDoc(currentEntryRef);
-    const currentEntry = currentEntryDoc.exists() ? convertTimestamps(currentEntryDoc.data()) as TimeEntry : null;
-
-    // Load settings
-    const settingsRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.SETTINGS}/preferences`);
-    const settingsDoc = await getDoc(settingsRef);
-    const settings = settingsDoc.exists() ? settingsDoc.data() : null;
-
-    // If no data exists yet, return initial state
-    if (clients.length === 0) {
-      return getInitialState();
-    }
-
-    return {
-      clients,
-      projects,
-      entries,
-      currentEntry,
-      isTracking: !!currentEntry,
-      selectedClientId: settings?.selectedClientId || clients[0]?.id
-    };
-  } catch (error) {
-    console.error('Error loading time state:', error);
-    throw error;
+    entriesSnapshot.docs.forEach(entryDoc => {
+      const entryRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.TIME_ENTRIES}/${entryDoc.id}`);
+      batch.delete(entryRef);
+    });
   }
+
+  await batch.commit();
 };
 
-const getInitialState = (): TimeState => {
-  const defaultClient: Client = {
-    id: 'default',
-    name: 'Default Client',
-    color: '#3B82F6'
-  };
+export const deleteProject = async (userId: string, projectId: string) => {
+  const batch = writeBatch(db);
 
-  const defaultProject: Project = {
-    id: 'default-project',
-    clientId: defaultClient.id,
-    name: 'General',
-    color: '#3B82F6',
-    tasks: [{
-      id: 'default-task',
-      projectId: defaultClient.id,
-      name: 'General Task',
-      description: 'Default task for general work'
-    }]
-  };
+  // Delete project document
+  const projectRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${projectId}`);
+  batch.delete(projectRef);
 
-  return {
-    isTracking: false,
-    currentEntry: null,
-    entries: [],
-    projects: [defaultProject],
-    clients: [defaultClient],
-    selectedClientId: defaultClient.id
-  };
+  // Delete all tasks for this project
+  const tasksSnapshot = await getDocs(
+    collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${projectId}/${COLLECTIONS.TASKS}`)
+  );
+  
+  tasksSnapshot.docs.forEach(taskDoc => {
+    const taskRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${projectId}/${COLLECTIONS.TASKS}/${taskDoc.id}`);
+    batch.delete(taskRef);
+  });
+
+  // Delete all time entries for this project
+  const entriesSnapshot = await getDocs(
+    query(collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.TIME_ENTRIES}`),
+    where('projectId', '==', projectId))
+  );
+
+  entriesSnapshot.docs.forEach(entryDoc => {
+    const entryRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.TIME_ENTRIES}/${entryDoc.id}`);
+    batch.delete(entryRef);
+  });
+
+  await batch.commit();
+};
+
+export const deleteTask = async (userId: string, projectId: string, taskId: string) => {
+  const batch = writeBatch(db);
+
+  // Delete task document
+  const taskRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.PROJECTS}/${projectId}/${COLLECTIONS.TASKS}/${taskId}`);
+  batch.delete(taskRef);
+
+  // Delete all time entries for this task
+  const entriesSnapshot = await getDocs(
+    query(collection(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.TIME_ENTRIES}`),
+    where('taskId', '==', taskId))
+  );
+
+  entriesSnapshot.docs.forEach(entryDoc => {
+    const entryRef = doc(db, `${COLLECTIONS.USERS}/${userId}/${COLLECTIONS.TIME_ENTRIES}/${entryDoc.id}`);
+    batch.delete(entryRef);
+  });
+
+  await batch.commit();
 };
