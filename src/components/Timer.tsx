@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect } from 'react';
 import { Play, Square, Clock, Plus, Pause } from 'lucide-react';
 import { TimeEntry, Project, Task } from '../types';
 import { formatDuration } from '../utils/timeUtils';
 import { ProjectSelector } from './ProjectSelector';
 import { useAuth } from '../contexts/AuthContext';
 import { saveTimeEntry } from '../services/firebase';
+import { useTimer } from '../hooks/useTimer';
 
 interface TimerProps {
   isTracking: boolean;
@@ -21,7 +22,6 @@ interface TimerProps {
 }
 
 export const Timer: React.FC<TimerProps> = ({
-  isTracking,
   currentEntry,
   onStartTracking,
   onStopTracking,
@@ -34,65 +34,52 @@ export const Timer: React.FC<TimerProps> = ({
   onTimeEntrySaved,
 }) => {
   const { currentUser } = useAuth();
-  const [time, setTime] = useState<string>('00:00:00');
-  const [isPaused, setIsPaused] = useState(false);
-  const lastTickRef = useRef<number>(0);
-  const accumulatedTimeRef = useRef<number>(0);
+  
+  const { 
+    isRunning, 
+    isPaused, 
+    timeElapsed,
+    start: startTimer,
+    stop: stopTimer,
+    pause: pauseTimer,
+    resume: resumeTimer
+  } = useTimer('time_tracker');
 
   useEffect(() => {
-    let interval: number | undefined;
-    
-    if (isTracking && currentEntry && !isPaused) {
-      const updateTimer = () => {
-        const now = Date.now();
-        if (lastTickRef.current === 0) {
-          lastTickRef.current = now;
-        }
-
-        const elapsed = now - lastTickRef.current;
-        accumulatedTimeRef.current += elapsed;
-        lastTickRef.current = now;
-
-        const totalTime = accumulatedTimeRef.current + 
-          (currentEntry.startTime.getTime() - currentEntry.startTime.getTime());
-        setTime(formatDuration(new Date(0), new Date(totalTime)));
-      };
-      
-      updateTimer(); // Initial update
-      interval = window.setInterval(updateTimer, 1000);
-    } else if (!isTracking) {
-      setTime('00:00:00');
-      lastTickRef.current = 0;
-      accumulatedTimeRef.current = 0;
-      setIsPaused(false);
-    }
-
     return () => {
-      if (interval) {
-        clearInterval(interval);
+      if (isRunning) {
+        stopTimer();
       }
     };
-  }, [isTracking, currentEntry, isPaused]);
+  }, [isRunning, stopTimer]);
 
-  const handlePauseResume = () => {
-    setIsPaused(!isPaused);
-    if (isPaused) {
-      lastTickRef.current = Date.now();
-    }
+  const handleStartTracking = () => {
+    if (!selectedTask) return;
+    startTimer();
+    onStartTracking();
   };
 
   const handleStopTracking = async () => {
-    if (currentUser && currentEntry) {
-      const endTime = new Date();
-      const completedEntry = { ...currentEntry, endTime };
-      
-      try {
-        await saveTimeEntry(currentUser.uid, completedEntry);
-        onStopTracking();
-        onTimeEntrySaved?.();
-      } catch (error) {
-        console.error('Error saving time entry:', error);
-      }
+    if (!currentUser || !currentEntry) return;
+    
+    stopTimer();
+    const endTime = new Date();
+    const completedEntry = { ...currentEntry, endTime };
+    
+    try {
+      await saveTimeEntry(currentUser.uid, completedEntry);
+      onStopTracking();
+      onTimeEntrySaved?.();
+    } catch (error) {
+      console.error('Error saving time entry:', error);
+    }
+  };
+
+  const handlePauseResume = () => {
+    if (isPaused) {
+      resumeTimer();
+    } else {
+      pauseTimer();
     }
   };
 
@@ -112,7 +99,7 @@ export const Timer: React.FC<TimerProps> = ({
         <div className="flex items-center justify-center space-x-6">
           <Clock className="w-16 h-16 text-blue-600" />
           <span className={`text-8xl font-mono font-bold tracking-wider ${isPaused ? 'text-gray-400' : ''}`}>
-            {time}
+            {formatDuration(new Date(0), new Date(timeElapsed))}
           </span>
         </div>
 
@@ -127,17 +114,17 @@ export const Timer: React.FC<TimerProps> = ({
 
         <div className="flex items-center space-x-4">
           <button
-            onClick={isTracking ? handleStopTracking : onStartTracking}
+            onClick={isRunning ? handleStopTracking : handleStartTracking}
             disabled={!selectedTask}
             className={`px-8 py-4 rounded-full text-lg flex items-center space-x-3 ${
               !selectedTask
                 ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                : isTracking
+                : isRunning
                 ? 'bg-red-100 text-red-600 hover:bg-red-200'
                 : 'bg-green-100 text-green-600 hover:bg-green-200'
             }`}
           >
-            {isTracking ? (
+            {isRunning ? (
               <>
                 <Square className="w-8 h-8" />
                 <span>Stop</span>
@@ -150,7 +137,7 @@ export const Timer: React.FC<TimerProps> = ({
             )}
           </button>
 
-          {isTracking && (
+          {isRunning && (
             <button
               onClick={handlePauseResume}
               className={`px-8 py-4 rounded-full text-lg flex items-center space-x-3 ${

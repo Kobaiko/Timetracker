@@ -3,13 +3,19 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   signInWithEmailAndPassword,
   signOut,
-  onAuthStateChanged,
-  User
+  onAuthStateChanged
 } from 'firebase/auth';
 import { auth } from '../config/firebase';
 
+interface AuthUser {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+  photoURL: string | null;
+}
+
 interface AuthContextType {
-  currentUser: User | null;
+  currentUser: AuthUser | null;
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
@@ -18,22 +24,37 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => {
+    const savedUser = localStorage.getItem('auth_user');
+    return savedUser ? JSON.parse(savedUser) : null;
+  });
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(!!currentUser);
   const navigate = useNavigate();
   const location = useLocation();
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setCurrentUser(user);
-      setIsAuthenticated(!!user);
-      
-      if (!user && location.pathname !== '/login') {
-        navigate('/login', { state: { from: location }, replace: true });
+      if (user) {
+        const userData: AuthUser = {
+          uid: user.uid,
+          email: user.email,
+          displayName: user.displayName,
+          photoURL: user.photoURL
+        };
+        localStorage.setItem('auth_user', JSON.stringify(userData));
+        setCurrentUser(userData);
+        setIsAuthenticated(true);
+      } else {
+        localStorage.removeItem('auth_user');
+        setCurrentUser(null);
+        setIsAuthenticated(false);
+        if (location.pathname !== '/login') {
+          navigate('/login', { state: { from: location }, replace: true });
+        }
       }
     });
 
-    return unsubscribe;
+    return () => unsubscribe();
   }, [navigate, location]);
 
   const login = async (email: string, password: string) => {
@@ -49,6 +70,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = async () => {
     try {
       await signOut(auth);
+      localStorage.removeItem('auth_user');
       navigate('/login', { replace: true });
     } catch (error) {
       console.error('Error signing out:', error);
@@ -56,7 +78,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ currentUser, isAuthenticated, login, logout }}>
+    <AuthContext.Provider value={{ 
+      currentUser, 
+      isAuthenticated,
+      login, 
+      logout 
+    }}>
       {children}
     </AuthContext.Provider>
   );
