@@ -36,9 +36,9 @@ export const Timer: React.FC<TimerProps> = ({
   const { currentUser } = useAuth();
   
   const { 
+    timeRemaining: timeElapsed,
     isRunning, 
-    isPaused, 
-    timeElapsed,
+    isPaused,
     start: startTimer,
     stop: stopTimer,
     pause: pauseTimer,
