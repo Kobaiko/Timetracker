@@ -3,12 +3,16 @@ export const downloadReport = (entries: TimeEntry[], projects: Project[], report
     const project = projects.find(p => p.id === entry.projectId);
     return {
       Date: format(new Date(entry.startTime), 'dd-MM-yyyy'),
-      'Start Time': format(new Date(entry.startTime), 'HH:mm:ss'),
-      'End Time': format(new Date(entry.endTime), 'HH:mm:ss'),
-      Duration: formatDuration(intervalToDuration({
-        start: new Date(entry.startTime),
-        end: new Date(entry.endTime)
-      })),
+      'Start Time': format(parseISO(entry.startTime), 'HH:mm:ss'),
+      'End Time': format(parseISO(entry.endTime), 'HH:mm:ss'),
+      Duration: intervalToDuration({
+        start: parseISO(entry.startTime),
+        end: parseISO(entry.endTime)
+      }).hours + ':' + 
+      String(intervalToDuration({
+        start: parseISO(entry.startTime),
+        end: parseISO(entry.endTime)
+      }).minutes).padStart(2, '0'),
       Project: project?.name || 'Unknown Project',
       Description: entry.description
     };
